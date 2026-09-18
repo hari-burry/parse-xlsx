@@ -3,6 +3,7 @@ const XLSX = require("xlsx");
 module.exports = async (req, res) => {
 	if (req.method !== "POST") {
 		return res.status(405).json({
+			success: false,
 			error: "Method not allowed",
 		});
 	}
@@ -12,15 +13,69 @@ module.exports = async (req, res) => {
 
 		if (!file) {
 			return res.status(400).json({
+				success: false,
 				error: "No XLSX file provided",
 			});
 		}
 
-		// Base64 → Buffer
-		const buffer = Buffer.from(file, "base64");
-
 		console.log("Received file:", filename);
-		console.log("Buffer size:", buffer.length);
+		console.log("Input starts with:", file.substring(0, 20));
+
+		/*
+		 * Copilot is currently sending:
+		 *
+		 * Raw XLSX bytes
+		 *      ↓ base64()
+		 * VUVzRE...
+		 *
+		 * First decode:
+		 * VUVzRE...
+		 *      ↓
+		 * UEsDB...
+		 *
+		 * Second decode:
+		 * UEsDB...
+		 *      ↓
+		 * PK...
+		 *
+		 * Therefore we decode twice.
+		 */
+
+		// First Base64 decode
+		let decoded = Buffer.from(file, "base64");
+
+		console.log("After first decode:", decoded.toString("utf8", 0, 20));
+
+		/*
+		 * If the first decoded data starts with "UEsDB",
+		 * it is still Base64 encoded.
+		 */
+		const decodedText = decoded.toString("utf8").trim();
+
+		let buffer;
+
+		if (decodedText.startsWith("UEsDB")) {
+			console.log("Detected double Base64 encoding.");
+
+			// Second Base64 decode → actual XLSX bytes
+			buffer = Buffer.from(decodedText, "base64");
+		} else {
+			// Already actual XLSX bytes
+			buffer = decoded;
+		}
+
+		console.log("Final buffer size:", buffer.length);
+
+		// XLSX files are ZIP files and normally begin with PK
+		console.log("File signature:", buffer.subarray(0, 4).toString("hex"));
+
+		if (buffer[0] !== 0x50 || buffer[1] !== 0x4b) {
+			return res.status(400).json({
+				success: false,
+				error: "Decoded content is not a valid XLSX file",
+				signature: buffer.subarray(0, 8).toString("hex"),
+			});
+		}
 
 		// Read workbook
 		const workbook = XLSX.read(buffer, {
@@ -29,6 +84,7 @@ module.exports = async (req, res) => {
 
 		if (!workbook.SheetNames.length) {
 			return res.status(400).json({
+				success: false,
 				error: "XLSX file contains no sheets",
 			});
 		}
@@ -39,7 +95,7 @@ module.exports = async (req, res) => {
 		console.log("Sheet:", sheetName);
 		console.log("Range:", worksheet["!ref"]);
 
-		// Read rows as arrays instead of objects
+		// Read worksheet as arrays
 		const rows = XLSX.utils.sheet_to_json(worksheet, {
 			header: 1,
 			defval: null,
@@ -60,9 +116,12 @@ module.exports = async (req, res) => {
 			});
 		}
 
-		// First row is the header
+		// First row = headers
 		const headers = rows[0];
 
+		console.log("Headers:", headers);
+
+		// Find AID column
 		const aidIndex = headers.findIndex(
 			(header) => String(header).trim().toUpperCase() === "AID",
 		);
@@ -85,6 +144,8 @@ module.exports = async (req, res) => {
 					value !== null &&
 					String(value).trim() !== "",
 			);
+
+		console.log("Extracted AIDs:", aids);
 
 		return res.status(200).json({
 			success: true,
