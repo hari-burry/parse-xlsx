@@ -1,7 +1,6 @@
 const XLSX = require("xlsx");
 
 module.exports = async (req, res) => {
-	// Only allow POST
 	if (req.method !== "POST") {
 		return res.status(405).json({
 			error: "Method not allowed",
@@ -9,57 +8,89 @@ module.exports = async (req, res) => {
 	}
 
 	try {
-		// Expect JSON body:
-		// {
-		//   "file": "<base64 string>",
-		//   "filename": "testbook.xlsx"
-		// }
-
 		const { file, filename } = req.body;
 
-		// Check whether file was provided
 		if (!file) {
 			return res.status(400).json({
 				error: "No XLSX file provided",
 			});
 		}
 
-		// Convert Base64 string into a Buffer
+		// Base64 → Buffer
 		const buffer = Buffer.from(file, "base64");
 
-		// Read the Excel workbook
+		console.log("Received file:", filename);
+		console.log("Buffer size:", buffer.length);
+
+		// Read workbook
 		const workbook = XLSX.read(buffer, {
 			type: "buffer",
 		});
 
-		// Make sure workbook has at least one sheet
-		if (!workbook.SheetNames || workbook.SheetNames.length === 0) {
+		if (!workbook.SheetNames.length) {
 			return res.status(400).json({
 				error: "XLSX file contains no sheets",
 			});
 		}
 
-		// Get first sheet
 		const sheetName = workbook.SheetNames[0];
 		const worksheet = workbook.Sheets[sheetName];
 
-		// Convert sheet to JSON
-		const rows = XLSX.utils.sheet_to_json(worksheet);
+		console.log("Sheet:", sheetName);
+		console.log("Range:", worksheet["!ref"]);
 
-		// Extract AID column
+		// Read rows as arrays instead of objects
+		const rows = XLSX.utils.sheet_to_json(worksheet, {
+			header: 1,
+			defval: null,
+			raw: true,
+		});
+
+		console.log("Rows:", rows);
+
+		if (rows.length === 0) {
+			return res.status(200).json({
+				success: true,
+				filename: filename || null,
+				sheet: sheetName,
+				rowCount: 0,
+				aidCount: 0,
+				aids: [],
+				message: "Worksheet contains no readable rows",
+			});
+		}
+
+		// First row is the header
+		const headers = rows[0];
+
+		const aidIndex = headers.findIndex(
+			(header) => String(header).trim().toUpperCase() === "AID",
+		);
+
+		if (aidIndex === -1) {
+			return res.status(400).json({
+				success: false,
+				error: "AID column not found",
+				headers: headers,
+			});
+		}
+
+		// Extract AID values
 		const aids = rows
-			.map((row) => row.AID)
+			.slice(1)
+			.map((row) => row[aidIndex])
 			.filter(
 				(value) =>
-					value !== undefined && value !== null && value !== "",
+					value !== undefined &&
+					value !== null &&
+					String(value).trim() !== "",
 			);
 
-		// Return result
 		return res.status(200).json({
 			success: true,
 			filename: filename || null,
 			sheet: sheetName,
-			rowCount: rows.length,
+			rowCount: rows.length - 1,
 			aidCount: aids.length,
 			aids: aids,
 		});
